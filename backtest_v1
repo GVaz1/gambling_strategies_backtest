@@ -1,0 +1,144 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+# user input
+rand_len = 10000
+in_high = 2
+in_low = 0
+strat2_window_size = 200
+strat3_window_size = 20
+strat4_window_size = 20
+
+
+# function to feed pseudo random values into array
+def getdata(arr, length, low, high):
+    for i in range(length):
+        x = np.random.randint(low=low, high=high)
+        arr.append(x)
+
+
+# replace value (liability) in array with replacement
+def rep(arr, liability, replacement):
+    # remove 0 from array
+    for i in range(len(arr)):
+        # replace liability with replacement
+        if arr[i] == liability:
+            arr[i] = replacement
+
+
+# convert array into dataframe with cumulative sum column
+def convert(arr):
+    # turn it into data frame for further analysis
+    arr = pd.DataFrame(arr)
+    arr.columns = ['Values']
+    arr['returns'] = arr['Values'].cumsum()
+    return arr
+
+
+# find probability of both events in dataname and call them prob1n and prob2n
+def probaility(dataframe, dataname, prob1n, prob2n):
+    dataframe.reset_index(inplace=True)
+    dataframe['ones'] = dataframe[dataname].replace([-1], 0)
+    dataframe['cum_ones'] = dataframe['ones'].cumsum()
+    dataframe[prob1n] = dataframe['cum_ones'] / (dataframe['index'] + 1)
+    dataframe[prob2n] = 1 - dataframe[prob1n]
+    dataframe = dataframe.drop(columns=['ones', 'cum_ones', 'index'], axis=1)
+    return dataframe
+
+
+# find probaility of both events in datetime if there are zero values in returns and call them prob1n and prob2n
+def stratprobaility(dataframe, dataname, prob1n, prob2n):
+    dataframe.reset_index(inplace=True)
+    dataframe['zero'] = dataframe[dataname]
+    dataframe['zero'] = dataframe['zero'].replace([0, -0], 2)
+    dataframe['zero'] = dataframe['zero'].replace([1, -1], 0)
+    dataframe['zero'] = dataframe['zero'].replace([2], 1)
+    dataframe['zero_cum'] = dataframe['zero'].cumsum()
+    dataframe['ones'] = dataframe[dataname].replace([-1], 0)
+    dataframe['cum_ones'] = dataframe['ones'].cumsum()
+    dataframe[prob1n] = dataframe['cum_ones'] / ((dataframe['index']) - dataframe['zero_cum'])
+    dataframe[prob2n] = 1 - dataframe[prob1n]
+    dataframe = dataframe.drop(columns=['ones', 'cum_ones', 'index', 'zero', 'zero_cum'], axis=1)
+    return dataframe
+
+
+# find probaility of both events in datetime for a rolling window
+def stratprobailityrolling(dataframe, dataname, prob1n, prob2n, window_size):
+    dataframe['zero'] = dataframe[dataname]
+    dataframe['zero'] = dataframe['zero'].replace([0, -0], 2)
+    dataframe['zero'] = dataframe['zero'].replace([1, -1], 0)
+    dataframe['zero'] = dataframe['zero'].replace([2], 1)
+    dataframe['zero_cum'] = dataframe['zero'].rolling(window=window_size).sum()
+    dataframe['ones'] = dataframe[dataname].replace([-1], 0)
+    dataframe['cum_ones'] = dataframe['ones'].rolling(window=window_size).sum()
+    dataframe[prob1n] = dataframe['cum_ones'] / (window_size - dataframe['zero_cum'])
+    dataframe[prob2n] = 1 - dataframe[prob1n]
+    dataframe = dataframe.drop(columns=['ones', 'cum_ones', 'zero', 'zero_cum'], axis=1)
+    return dataframe
+
+
+# feed random values into array
+data = []
+getdata(arr=data, length=rand_len, low=in_low, high=in_high)
+rep(arr=data, liability=0, replacement=-1)
+data = convert(arr=data)
+data = probaility(data, dataname='Values', prob1n='prob01', prob2n='prob00')
+
+
+# test betting 1 if previous value was 1
+data['strat_position'] = np.where(data['Values'] == 1, 1, 0)
+data['strat_returns'] = data['strat_position'].shift(1) * data['Values']
+data['strat1_cum_returns'] = data['strat_returns'].cumsum()
+data = stratprobaility(data, dataname='strat_returns', prob1n='prob11', prob2n='prob10')
+data = data.drop(columns=['strat_position', 'strat_returns'], axis=1)
+
+
+# test betting on less probable outcome
+stratprobailityrolling(data, dataname='Values', prob1n='prob1t2', prob2n='prob2t2', window_size=strat2_window_size)
+data['strat2_position'] = np.where(data['prob1t2'] < data['prob2t2'], 1, 0)
+data['strat2_returns'] = data['strat2_position'].shift(1) * data['Values']
+data['strat2_cum_returns'] = data['strat2_returns'].cumsum()
+data = stratprobaility(data, dataname='strat2_returns', prob1n='prob21', prob2n='prob20')
+data = data.drop(columns=['strat2_position', 'strat2_returns', 'prob1t2', 'prob2t2'], axis=1)
+
+
+# test betting % of equity equal to risk based of probability of outcomes in window
+stratprobailityrolling(data, dataname='Values', prob1n='prob1t3', prob2n='prob2t3', window_size=strat3_window_size)
+data['prob_diff'] = data['prob2t3'] - data['prob1t3']
+data['pos_size'] = 1 - ((data['prob_diff'] * 333)/100)
+data['pos_size'] = data['pos_size'].clip(lower=0.1, upper=1)
+data['strat3_returns'] = data['pos_size'].shift(1) * data['Values']
+data['strat3_cum_returns'] = data['strat3_returns'].cumsum()
+data = data.drop(columns=['prob_diff',  'prob1t3', 'prob2t3', 'strat3_returns', 'ones', 'zero_cum', 'zero', 'cum_ones'], axis=1)
+
+# test betting with moving average on returns
+data['MA'] = data['returns'].rolling(strat4_window_size).mean()
+data['strat4_position'] = np.where(data['MA'] < data['returns'], 1, 0)
+data['strat4_returns'] = data['strat4_position'].shift(1) * data['Values']
+data['strat4_cum_returns'] = data['strat4_returns'].cumsum()
+data = stratprobaility(data, dataname='strat4_returns', prob1n='prob41', prob2n='prob40')
+data = data.drop(columns=['MA',  'strat4_position', 'strat4_returns'], axis=1)
+
+
+# plot data used
+print(data.to_string())
+fig, ax = plt.subplots(2, figsize=(15, 7), sharex=True)
+ax[0].plot(data['returns'], color='black')
+ax[0].plot(data['strat1_cum_returns'], color='r')
+ax[0].plot(data['strat2_cum_returns'], color='blue')
+ax[0].plot(data['strat3_cum_returns'], color='orange')
+ax[0].plot(data['strat4_cum_returns'], color='purple')
+ax[0].axhline(y=0, color='black', linestyle='-')
+ax[0].legend(["default", "strat. 1"], loc=0, frameon=True)
+ax[0].set_title('Default Returns and Strategy Returns')
+ax[0].grid()
+ax[1].plot(data['prob01'], color='black')
+ax[1].plot(data['prob11'], color='r')
+ax[1].plot(data['prob21'], color='blue')
+ax[1].plot(data['prob41'], color='purple')
+ax[1].axhline(y=0.5, color='black', linestyle='-')
+ax[1].legend(["Prob. 01", "Prob. 11"], loc=0, frameon=True)
+ax[1].set_title('Default Prob. and Strategy Prob. of rolling 1')
+ax[1].grid()
+plt.show()
